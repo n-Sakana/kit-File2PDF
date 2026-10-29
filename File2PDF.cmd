@@ -1,14 +1,7 @@
 @echo off
-rem ============================================================
-rem  File2PDF.cmd
-rem  Merge PDF / PowerPoint / Word / Excel files into one PDF
-rem  for duplex printing (text UI, no admin rights, no extra install)
-rem
-rem  Usage : double-click, then pick a folder in the dialog
-rem          (or drag a folder onto this file)
-rem  Needs : Windows PowerShell 5.1 + Office (only for Office files)
-rem  Config: File2PDF.ini is created next to this file
-rem ============================================================
+rem Merge PDF and Office files into a PDF for duplex printing.
+rem Requires Windows PowerShell 5.1 and the corresponding Office apps.
+rem Double-click to choose a folder, or drag a folder onto this file.
 setlocal
 set "MERGE_SELF=%~f0"
 set "MERGE_ARG=%~1"
@@ -16,13 +9,8 @@ powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -Command "$t=[IO.File]::R
 if errorlevel 1 pause
 exit /b
 ##PS-BEGIN##
-# ============================================================
-#  ここから PowerShell。上の cmd 部分から呼び出されます。
-#  操作: 上下キーで移動 / Enter で決定 / Esc で戻る
-# ============================================================
 
-# ---------- 固定設定（変えたいときはここだけ編集） ----------
-$BlankAfterLast = $true      # 最後の資料が奇数ページでも後ろに白紙を入れる
+$BlankAfterLast = $true      # Pad the last document too if it has an odd page count.
 $Exts = @('.pdf', '.ppt', '.pptx', '.doc', '.docx', '.xls', '.xlsx', '.xlsm')
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +23,6 @@ $script:PickOk = $false
 $script:RunOk = $false
 $script:PickedDir = $null
 
-# ---------- C# : PDF 結合エンジン + 画面幅ユーティリティ（外部ライブラリ不要） ----------
 $cs = @'
 using System;
 using System.Collections.Generic;
@@ -45,13 +32,12 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 
-// Minimal PDF merger (C# 5 compatible, no external libraries).
+// PDF merger compatible with C# 5; no external libraries are required.
 // Reads classic xref tables, xref streams and object streams. Writes a classic xref table.
 public static class PdfMerge
 {
     static readonly Encoding L1 = Encoding.GetEncoding(28591);
 
-    // ---------- object model ----------
     class PdfRef { public int N; public PdfRef(int n) { N = n; } }
     class PdfName { public string V; public PdfName(string v) { V = v; } }
     class PdfStr { public byte[] B; public PdfStr(byte[] b) { B = b; } }
@@ -85,7 +71,6 @@ public static class PdfMerge
         return -1;
     }
 
-    // ---------- parser ----------
     class Parser
     {
         public byte[] D; public int P; Doc Owner;
@@ -111,7 +96,7 @@ public static class PdfMerge
         public object Obj()
         {
             Ws();
-            if (P >= D.Length) throw new Exception("unexpected end of data");
+            if (P >= D.Length) throw new Exception("Unexpected end of PDF data.");
             int c = D[P];
             if (c == '/') return ReadName();
             if (c == '(') return ReadLitStr();
@@ -127,14 +112,14 @@ public static class PdfMerge
                 while (true)
                 {
                     Ws();
-                    if (P >= D.Length) throw new Exception("unterminated array");
+                    if (P >= D.Length) throw new Exception("Unterminated PDF array.");
                     if (D[P] == ']') { P++; break; }
                     l.Add(Obj());
                 }
                 return l;
             }
             string t = Token();
-            if (t.Length == 0) throw new Exception("bad token at " + P);
+            if (t.Length == 0) throw new Exception("Invalid PDF token at byte offset " + P);
             if (IsDigits(t))
             {
                 int save = P;
@@ -156,7 +141,7 @@ public static class PdfMerge
             if (t == "true") return true;
             if (t == "false") return false;
             if (t == "null") return PdfNull.I;
-            throw new Exception("unexpected token '" + t + "' at " + P);
+            throw new Exception("Unexpected PDF token '" + t + "' at byte offset " + P);
         }
         PdfName ReadName()
         {
@@ -236,21 +221,21 @@ public static class PdfMerge
             while (true)
             {
                 Ws();
-                if (P + 1 >= D.Length) throw new Exception("unterminated dictionary");
+                if (P + 1 >= D.Length) throw new Exception("Unterminated PDF dictionary.");
                 if (D[P] == '>' && D[P + 1] == '>') { P += 2; break; }
-                if (D[P] != '/') throw new Exception("dictionary key expected at " + P);
+                if (D[P] != '/') throw new Exception("Expected a PDF dictionary key at byte offset " + P);
                 string k = ReadName().V;
                 d[k] = Obj();
             }
             return d;
         }
-        // Parses "N G obj ... endobj" at current position.
+        // Reads an indirect object starting at the current byte offset.
         public object Indirect(out int num)
         {
             Ws();
             num = int.Parse(Token(), CultureInfo.InvariantCulture);
             Token();
-            if (Token() != "obj") throw new Exception("'obj' expected");
+            if (Token() != "obj") throw new Exception("Expected the PDF 'obj' keyword.");
             object o = Obj();
             Ws();
             PdfDict dict = o as PdfDict;
@@ -280,7 +265,7 @@ public static class PdfMerge
                 else
                 {
                     int e = IndexOf(D, "endstream", P);
-                    if (e < 0) throw new Exception("endstream not found");
+                    if (e < 0) throw new Exception("PDF 'endstream' marker not found.");
                     int end = e;
                     if (end - 2 >= P && D[end - 2] == 13 && D[end - 1] == 10) end -= 2;
                     else if (end - 1 >= P && (D[end - 1] == 10 || D[end - 1] == 13)) end -= 1;
@@ -316,7 +301,6 @@ public static class PdfMerge
         return -1;
     }
 
-    // ---------- document ----------
     class Doc
     {
         public byte[] D;
@@ -332,11 +316,11 @@ public static class PdfMerge
         {
             D = data;
             int i = LastIndexOf(data, "startxref");
-            if (i < 0) throw new Exception("startxref not found (not a PDF or damaged)");
+            if (i < 0) throw new Exception("PDF 'startxref' marker not found. The file may be damaged or may not be a PDF.");
             Parser p = new Parser(data, i + 9, this);
             ReadXref(int.Parse(p.Token(), CultureInfo.InvariantCulture));
-            if (Trailer == null || !Trailer.ContainsKey("Root")) throw new Exception("Root not found");
-            if (Trailer.ContainsKey("Encrypt")) throw new Exception("encrypted (password protected) PDF is not supported");
+            if (Trailer == null || !Trailer.ContainsKey("Root")) throw new Exception("PDF document root not found.");
+            if (Trailer.ContainsKey("Encrypt")) throw new Exception("Encrypted PDFs are not supported.");
         }
 
         void ReadXref(int off)
@@ -366,7 +350,7 @@ public static class PdfMerge
                     }
                 }
                 PdfDict tr = p.Obj() as PdfDict;
-                if (tr == null) throw new Exception("bad trailer");
+                if (tr == null) throw new Exception("Invalid PDF trailer.");
                 if (Trailer == null) Trailer = tr;
                 if (tr.ContainsKey("XRefStm")) ReadXref(ToInt(tr["XRefStm"]));
                 if (tr.ContainsKey("Prev")) ReadXref(ToInt(tr["Prev"]));
@@ -375,7 +359,7 @@ public static class PdfMerge
             {
                 int num;
                 PdfStream xs = p.Indirect(out num) as PdfStream;
-                if (xs == null) throw new Exception("xref stream expected");
+                if (xs == null) throw new Exception("Expected a PDF cross-reference stream.");
                 PdfDict d = xs.D;
                 if (Trailer == null) Trailer = d;
                 byte[] data = Decode(xs);
@@ -422,7 +406,7 @@ public static class PdfMerge
         {
             o = Res(o);
             PdfNum n = o as PdfNum;
-            if (n == null) throw new Exception("number expected");
+            if (n == null) throw new Exception("Expected a PDF number.");
             return (int)double.Parse(n.T, CultureInfo.InvariantCulture);
         }
         public object Res(object o)
@@ -441,7 +425,7 @@ public static class PdfMerge
                 Parser p = new Parser(D, off, this);
                 int num;
                 object o = p.Indirect(out num);
-                if (num != n) throw new Exception("object number mismatch " + num + " vs " + n);
+                if (num != n) throw new Exception("PDF object number mismatch: " + num + " vs " + n);
                 Cache[n] = o;
                 return o;
             }
@@ -458,7 +442,7 @@ public static class PdfMerge
             if (StmLoaded.ContainsKey(sn)) return;
             StmLoaded[sn] = true;
             PdfStream st = Get(sn) as PdfStream;
-            if (st == null) throw new Exception("object stream expected");
+            if (st == null) throw new Exception("Expected a PDF object stream.");
             byte[] data = Decode(st);
             int N = ToInt(st.D["N"]);
             int first = ToInt(st.D["First"]);
@@ -506,7 +490,7 @@ public static class PdfMerge
                         data = PngUnpredict(data, cols, colors, bpc);
                     }
                 }
-                else throw new Exception("unsupported filter in structure stream: " + a);
+                else throw new Exception("Unsupported compression filter in a PDF structure stream: " + a);
             }
             return data;
         }
@@ -564,13 +548,13 @@ public static class PdfMerge
         {
             List<PageInfo> res = new List<PageInfo>();
             PdfDict root = Res(Trailer["Root"]) as PdfDict;
-            if (root == null || !root.ContainsKey("Pages")) throw new Exception("page tree not found");
+            if (root == null || !root.ContainsKey("Pages")) throw new Exception("PDF page tree not found.");
             Walk(root["Pages"], new PdfDict(), 0, res, new Dictionary<int, bool>());
             return res;
         }
         void Walk(object r, PdfDict inh, int depth, List<PageInfo> res, Dictionary<int, bool> seen)
         {
-            if (depth > 64) throw new Exception("page tree too deep");
+            if (depth > 64) throw new Exception("PDF page tree exceeds the depth limit.");
             PdfDict node = Res(r) as PdfDict;
             if (node == null) return;
             PdfDict ni = new PdfDict();
@@ -605,7 +589,6 @@ public static class PdfMerge
         }
     }
 
-    // ---------- copying objects into the output ----------
     class Ctx
     {
         public List<object> Objs; public Doc Src;
@@ -634,7 +617,7 @@ public static class PdfMerge
                 PdfDict nd = new PdfDict();
                 foreach (KeyValuePair<string, object> kv in d)
                 {
-                    // the tag structure tree is not carried over -> drop links to it
+                    // The output omits the tag structure tree, so references to it must be removed.
                     if (kv.Key == "StructParent" || kv.Key == "StructParents") continue;
                     nd[kv.Key] = Cp(kv.Value);
                 }
@@ -660,7 +643,6 @@ public static class PdfMerge
         }
     }
 
-    // ---------- writer ----------
     static void W(Stream w, string s) { byte[] b = L1.GetBytes(s); w.Write(b, 0, b.Length); }
     static string EscName(string n)
     {
@@ -708,13 +690,12 @@ public static class PdfMerge
             foreach (object x in (List<object>)o) { Ser(x, w); W(w, " "); }
             W(w, "]");
         }
-        else throw new Exception("cannot serialize object");
+        else throw new Exception("Cannot write an unsupported PDF object.");
     }
 
     static PdfName Nm(string s) { return new PdfName(s); }
     static PdfNum Nn(int i) { return new PdfNum(i.ToString(CultureInfo.InvariantCulture)); }
 
-    // ---------- A4 unification ----------
     const double A4W = 595.276;
     const double A4H = 841.89;
 
@@ -735,7 +716,7 @@ public static class PdfMerge
         return r;
     }
 
-    // Visible (rotated) size of a page. Returns false if it cannot be determined.
+    // Returns the visible page size after rotation, or false if the size is unknown.
     static bool VisualSize(Doc doc, PdfDict d, out double vw, out double vh)
     {
         vw = 0; vh = 0;
@@ -754,9 +735,9 @@ public static class PdfMerge
         return true;
     }
 
-    // Fits one page (dictionary d, in SOURCE object space, already containing inherited keys)
-    // onto an A4 page. Returns false when nothing had to be changed (already A4 / unknown size).
-    // On true: d is modified (MediaBox etc.), and the new content-stream pieces are returned.
+    // Requires a page dictionary containing inherited keys from the source document.
+    // Updates its boxes and returns content wrappers for A4 scaling.
+    // Returns false for pages already within the A4 tolerance or with an unknown size.
     static bool FitA4(Doc doc, PdfDict d, out string prefix, out string suffix)
     {
         prefix = null; suffix = null;
@@ -777,10 +758,10 @@ public static class PdfMerge
         bool land = vw > vh;
         double tw = land ? A4H : A4W;
         double th = land ? A4W : A4H;
-        if (Math.Abs(vw - tw) <= 2.0 && Math.Abs(vh - th) <= 2.0) return false;   // already A4
+        if (Math.Abs(vw - tw) <= 2.0 && Math.Abs(vh - th) <= 2.0) return false;   // Allow a two-point tolerance for A4 dimensions.
 
         double s = Math.Min(tw / vw, th / vh);
-        double bw = swap ? th : tw;      // page box in unrotated space
+        double bw = swap ? th : tw;      // Page boxes use coordinates before rotation.
         double bh = swap ? tw : th;
         double tx = (bw - s * w0) / 2.0 - s * x0;
         double ty = (bh - s * h0) / 2.0 - s * y0;
@@ -793,21 +774,20 @@ public static class PdfMerge
         mb.Add(new PdfNum("0")); mb.Add(new PdfNum("0")); mb.Add(new PdfNum(F(bw))); mb.Add(new PdfNum(F(bh)));
         d["MediaBox"] = mb;
         d.Remove("CropBox"); d.Remove("TrimBox"); d.Remove("BleedBox"); d.Remove("ArtBox");
-        d.Remove("Annots");   // link positions would no longer match after scaling
+        d.Remove("Annots");   // Annotation positions would no longer match the scaled content.
         return true;
     }
 
-    // ---------- public API ----------
     public static int PageCount(string path)
     {
         Doc d = new Doc(File.ReadAllBytes(path));
         return d.Pages().Count;
     }
 
-    // paths/titles/blankAfter : one entry per input document.
-    // startPage[i] (out) : 1-based first page of document i in the result, 0 if it was skipped.
-    // errors[i]      (out) : error text when document i was skipped, otherwise null.
-    // Returns the total number of pages written.
+    // All arrays must have one entry per input document.
+    // Fills startPage with one-based output page numbers, or zero for skipped documents.
+    // Fills errors with messages for skipped documents, or null for successful ones.
+    // Returns the total output page count, including blank pages.
     public static int Merge(string[] paths, string[] titles, bool[] blankAfter, bool unifyA4,
                             bool skipOnError, string outPath, int[] startPage, string[] errors)
     {
@@ -828,7 +808,7 @@ public static class PdfMerge
             {
                 Doc doc = new Doc(File.ReadAllBytes(paths[di]));
                 List<PageInfo> pg = doc.Pages();
-                if (pg.Count == 0) throw new Exception("no pages");
+                if (pg.Count == 0) throw new Exception("The PDF contains no pages.");
 
                 Ctx cx = new Ctx();
                 cx.Objs = objs; cx.Src = doc;
@@ -864,7 +844,7 @@ public static class PdfMerge
                     }
 
                     PdfDict copied = (PdfDict)cx.Cp(d);
-                    copied["Parent"] = new PdfRef(pagesNum);   // set AFTER copy: must point to the new Pages node
+                    copied["Parent"] = new PdfRef(pagesNum);   // Assign after copying to reference the output page tree.
                     if (contentRefs != null)
                     {
                         int preNum = cx.Alloc();
@@ -925,7 +905,7 @@ public static class PdfMerge
             }
             catch (Exception ex)
             {
-                // roll back everything this document added
+                // Discard partial copies so a failed document cannot corrupt the output.
                 objs.RemoveRange(mark, objs.Count - mark);
                 while (allPages.Count > pagesBefore) allPages.RemoveAt(allPages.Count - 1);
                 startPage[di] = 0;
@@ -934,7 +914,7 @@ public static class PdfMerge
             }
         }
 
-        if (okDocs.Count == 0) throw new Exception("no document could be merged");
+        if (okDocs.Count == 0) throw new Exception("No documents could be merged.");
 
         PdfDict pagesDict = new PdfDict();
         pagesDict["Type"] = Nm("Pages");
@@ -944,7 +924,6 @@ public static class PdfMerge
         pagesDict["Count"] = Nn(allPages.Count);
         objs[pagesNum - 1] = pagesDict;
 
-        // bookmarks (only for documents that were merged)
         int[] items = new int[okDocs.Count];
         for (int i = 0; i < items.Length; i++) { objs.Add(null); items[i] = objs.Count; }
         objs.Add(null); int ol = objs.Count;
@@ -978,7 +957,7 @@ public static class PdfMerge
         catalog["PageMode"] = Nm("UseOutlines");
         objs[cat - 1] = catalog;
 
-        // write (to a temp file first, so a failure never leaves a broken PDF behind)
+        // Finish writing a temporary PDF before replacing the destination.
         long[] offs = new long[objs.Count];
         string tmpOut = outPath + ".tmp";
         using (FileStream fs = new FileStream(tmpOut, FileMode.Create, FileAccess.Write))
@@ -987,7 +966,7 @@ public static class PdfMerge
             fs.Write(new byte[] { 0x25, 0xE2, 0xE3, 0xCF, 0xD3, 0x0A }, 0, 6);
             for (int i = 0; i < objs.Count; i++)
             {
-                if (objs[i] == null) throw new Exception("internal error: object " + (i + 1) + " is empty");
+                if (objs[i] == null) throw new Exception("Internal error: PDF object " + (i + 1) + " is empty.");
                 offs[i] = fs.Position;
                 W(fs, (i + 1).ToString(CultureInfo.InvariantCulture) + " 0 obj\n");
                 Ser(objs[i], fs);
@@ -1008,7 +987,6 @@ public static class PdfMerge
     }
 }
 
-// ---------- helpers for the text UI (display width of full-width characters) ----------
 public static class TuiUtil
 {
     public static int CharWidth(char c)
@@ -1019,7 +997,7 @@ public static class TuiUtil
         if ((u >= 0x1100 && u <= 0x115F) || (u >= 0x2E80 && u <= 0xA4CF) || (u >= 0xAC00 && u <= 0xD7A3) ||
             (u >= 0xF900 && u <= 0xFAFF) || (u >= 0xFE30 && u <= 0xFE6F) || (u >= 0xFF00 && u <= 0xFF60) ||
             (u >= 0xFFE0 && u <= 0xFFE6) ||
-            // East Asian "ambiguous" symbols (circled numbers, arrows, shapes...): wide in Japanese consoles
+            // Treat ambiguous symbols as wide to match Japanese console rendering.
             (u >= 0x2190 && u <= 0x21FF) || (u >= 0x2460 && u <= 0x24FF) ||
             (u >= 0x25A0 && u <= 0x25FF) || (u >= 0x2600 && u <= 0x27BF))
             return 2;
@@ -1032,7 +1010,7 @@ public static class TuiUtil
         for (int i = 0; i < s.Length; i++) w += CharWidth(s[i]);
         return w;
     }
-    // Cut the end so that the display width is <= maxW.
+    // Truncates the end to fit the requested display width, reserving three columns for dots.
     public static string CutEnd(string s, int maxW)
     {
         if (s == null) return "";
@@ -1049,7 +1027,7 @@ public static class TuiUtil
         }
         return sb.ToString() + "...";
     }
-    // Keep the tail (file name side) of a path: "...rest\of\path.pdf"
+    // Keeps the filename end of a path when truncating it.
     public static string CutHead(string s, int maxW)
     {
         if (s == null) return "";
@@ -1066,7 +1044,7 @@ public static class TuiUtil
         }
         return "..." + sb.ToString();
     }
-    // Cut (end) and pad with spaces to exactly w display columns.
+    // Truncates and pads text to the requested display width.
     public static string Pad(string s, int w)
     {
         string t = CutEnd(s, w);
@@ -1077,30 +1055,29 @@ public static class TuiUtil
 }
 '@
 
-# ---------- 設定ファイル（この cmd と同じフォルダ。なければ自動生成） ----------
 $script:Self = $env:MERGE_SELF
 $script:SelfDir = Split-Path -Parent $script:Self
 $script:SettingsPath = [System.IO.Path]::ChangeExtension($script:Self, '.ini')
 
 $script:SettingDefs = @(
-    [pscustomobject]@{ Key = 'UnifyA4'; Default = $true; Label = 'ページサイズを A4 に統一';
-        Desc = '縦横の向きと比率を保ったまま A4 に収めます。白紙も A4 になります（PDF 内のリンクは無効になります）' },
-    [pscustomobject]@{ Key = 'ExcelFitWidth'; Default = $true; Label = 'Excel を横 1 ページに収める';
-        Desc = 'Excel の各シートを横 1 ページに収めて変換します（元のファイルは変更しません）' },
-    [pscustomobject]@{ Key = 'SkipOnError'; Default = $false; Label = '変換に失敗したらスキップ';
-        Desc = 'オフ: 失敗したら中止してエラーを表示 / オン: そのファイルを除いて続行' },
-    [pscustomobject]@{ Key = 'OpenFolderAfter'; Default = $true; Label = '完了後に出力フォルダを開く';
-        Desc = '出力した PDF を選択した状態でエクスプローラーを開きます' },
-    [pscustomobject]@{ Key = 'ReturnToMenu'; Default = $false; Label = '完了後にメニューへ戻る';
-        Desc = 'オフ: 完了したら終了 / オン: メニューに戻って続けて操作できます' }
+    [pscustomobject]@{ Key = 'UnifyA4'; Default = $true; Label = 'Fit pages to A4';
+        Desc = 'Resized pages lose links and annotations. Keeps orientation and proportions; blank pages use A4.' },
+    [pscustomobject]@{ Key = 'ExcelFitWidth'; Default = $true; Label = 'Fit Excel sheets to one page wide';
+        Desc = 'Fits each worksheet to one page wide. Source files are unchanged.' },
+    [pscustomobject]@{ Key = 'SkipOnError'; Default = $false; Label = 'Skip files with errors';
+        Desc = 'Off: stop on error. On: skip the failed file and continue.' },
+    [pscustomobject]@{ Key = 'OpenFolderAfter'; Default = $true; Label = 'Open the output folder when finished';
+        Desc = 'Opens File Explorer with the output PDF selected.' },
+    [pscustomobject]@{ Key = 'ReturnToMenu'; Default = $false; Label = 'Return to the menu when finished';
+        Desc = 'Off: exit when finished. On: return to the menu.' }
 )
 $script:Cfg = @{}
 
 function Save-Settings {
     $sb = New-Object System.Text.StringBuilder
-    [void]$sb.AppendLine('# File2PDF 設定ファイル')
-    [void]$sb.AppendLine('# メニューの「設定」で変更すると、この内容が自動で更新されます。')
-    [void]$sb.AppendLine('# 手で編集する場合は true / false で指定してください。')
+    [void]$sb.AppendLine('# File2PDF settings')
+    [void]$sb.AppendLine('# Changes in the Settings menu are saved here automatically.')
+    [void]$sb.AppendLine('# Use true or false when editing values manually.')
     [void]$sb.AppendLine('')
     foreach ($d in $script:SettingDefs) {
         [void]$sb.AppendLine('# ' + $d.Label + ' - ' + $d.Desc)
@@ -1135,11 +1112,10 @@ function Load-Settings {
         catch { }
     }
     else {
-        [void](Save-Settings)    # 初回: 既定値で生成
+        [void](Save-Settings)
     }
 }
 
-# ---------- 共通 ----------
 function Get-Msg($e) {
     $x = $e.Exception
     while ($x.InnerException) { $x = $x.InnerException }
@@ -1177,7 +1153,7 @@ function Draw-Lines($lines) {
                 [Console]::ForegroundColor = $script:DefFg
                 [Console]::BackgroundColor = $script:DefBg
             }
-            # 実際のカーソル位置から行末まで空白で埋める（全角・記号の幅の差があっても崩れない）
+            # Clear from the actual cursor position to account for console character widths.
             $pad = $cols - [Console]::CursorLeft
             if ($pad -gt 0) { [Console]::Write(' ' * $pad) }
         }
@@ -1185,7 +1161,7 @@ function Draw-Lines($lines) {
         [Console]::BackgroundColor = $script:DefBg
     }
     catch {
-        [Console]::Clear()    # ウィンドウサイズ変更などで失敗したら次の描画でやり直す
+        [Console]::Clear()    # Retry on the next redraw if the console size changed.
     }
 }
 
@@ -1200,14 +1176,13 @@ function Wait-Enter([string]$text) {
     }
 }
 
-# ---------- ① フォルダ選択ダイアログ ----------
 function Select-Folder {
     $script:PickedDir = $null
     Add-Type -AssemblyName System.Windows.Forms
     $owner = New-Object System.Windows.Forms.Form
     $owner.TopMost = $true
     $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-    $dlg.Description = 'まとめたいファイルが入っているフォルダを選んでください（サブフォルダも対象です）'
+    $dlg.Description = 'Choose a folder containing files to merge. Subfolders are included.'
     $dlg.ShowNewFolderButton = $false
     $dlg.SelectedPath = $script:SelfDir
     try {
@@ -1220,7 +1195,6 @@ function Select-Folder {
     }
 }
 
-# ---------- ② ファイル収集（サブフォルダ込み・昇順） ----------
 function Get-Targets([string]$dir, [string]$outRegex) {
     $list = New-Object 'System.Collections.Generic.List[object]'
     $root = $dir.TrimEnd('\')
@@ -1229,7 +1203,7 @@ function Get-Targets([string]$dir, [string]$outRegex) {
         if ($script:Exts -notcontains $ext) { continue }
         if ($f.Name.StartsWith('~$')) { continue }
         $rel = $f.FullName.Substring($root.Length).TrimStart('\')
-        if ($rel -match $outRegex) { continue }     # 前回までの出力ファイルは除外
+        if ($rel -match $outRegex) { continue }     # Exclude previous outputs in the selected folder.
         $list.Add([pscustomobject]@{ Rel = $rel; Full = $f.FullName; Ext = $ext; Name = $f.Name })
     }
     $cmp = [System.Comparison[object]] { param($a, $b) [string]::Compare($a.Rel, $b.Rel, [System.StringComparison]::OrdinalIgnoreCase) }
@@ -1237,8 +1211,7 @@ function Get-Targets([string]$dir, [string]$outRegex) {
     $script:Files = $list
 }
 
-# ---------- ③ / ⑥ 一覧つきメニュー（戻り値: 選んだ項目の番号、Esc は -1） ----------
-function Show-ListMenu($title, $infoLines, $listHeader, $listItems, $menuItems, $escText = '戻る') {
+function Show-ListMenu($title, $infoLines, $listHeader, $listItems, $menuItems, $escText = 'Back') {
     $sel = 0
     $scroll = 0
     [Console]::Clear()
@@ -1259,7 +1232,7 @@ function Show-ListMenu($title, $infoLines, $listHeader, $listItems, $menuItems, 
         foreach ($t in $infoLines) { $lines.Add((mkLine $t)) }
         $range = ''
         if ($n -gt $listRows) {
-            $range = ('   [{0}-{1} / {2}]  PageUp / PageDown でスクロール' -f ($scroll + 1), ([Math]::Min($n, $scroll + $listRows)), $n)
+            $range = ('   [{0}-{1} / {2}]  PageUp/PageDown: scroll' -f ($scroll + 1), ([Math]::Min($n, $scroll + $listRows)), $n)
         }
         $lines.Add((mkLine ($listHeader + $range) 'Cyan'))
         $last = [Math]::Min($n, $scroll + $listRows)
@@ -1272,7 +1245,7 @@ function Show-ListMenu($title, $infoLines, $listHeader, $listItems, $menuItems, 
             else { $lines.Add((mkLine ('    ' + $menuItems[$i]))) }
         }
         $lines.Add((mkLine ''))
-        $lines.Add((mkLine ('  上下キー: 移動    Enter: 決定    Esc: ' + $escText) 'DarkGray'))
+        $lines.Add((mkLine ('  Up/Down: move    Enter: select    Esc: ' + $escText) 'DarkGray'))
         Draw-Lines $lines
 
         $k = [Console]::ReadKey($true)
@@ -1286,7 +1259,6 @@ function Show-ListMenu($title, $infoLines, $listHeader, $listItems, $menuItems, 
     }
 }
 
-# ---------- ④ 順番を指定して結合（1 つずつ選ぶ） ----------
 function Show-OrderSelect($files) {
     $script:PickOk = $false
     $script:Picked = $null
@@ -1309,8 +1281,8 @@ function Show-OrderSelect($files) {
         if ($scroll -lt 0) { $scroll = 0 }
 
         $lines = New-Object 'System.Collections.Generic.List[object]'
-        $lines.Add((mkLine '順番を指定して結合' 'Yellow'))
-        $lines.Add((mkLine '  結合したい順に Enter で 1 つずつ選びます（もう一度 Enter で取り消し）。選ばなかったファイルは結合しません。'))
+        $lines.Add((mkLine 'Choose merge order' 'Yellow'))
+        $lines.Add((mkLine '  Enter adds/removes files in merge order. Unselected files are excluded.'))
         $lines.Add((mkLine ('-' * $cols) 'DarkGray'))
         $last = [Math]::Min($total, $scroll + $listRows)
         for ($i = $scroll; $i -lt $last; $i++) {
@@ -1326,15 +1298,15 @@ function Show-OrderSelect($files) {
                 }
             }
             elseif ($i -eq $n) {
-                $text = '=== 決定して次へ（' + $order.Count + ' 件選択中）'
+                $text = '=== Continue (' + $order.Count + ' selected)'
                 $fg = 'Cyan'
             }
             elseif ($i -eq $n + 1) {
-                $text = '=== やり直し（選択をすべて解除）'
+                $text = '=== Clear selection'
                 $fg = 'Cyan'
             }
             else {
-                $text = '=== 戻る'
+                $text = '=== Back'
                 $fg = 'Cyan'
             }
             if ($i -eq $cur) { $lines.Add((mkLine ('> ' + $text) 'Black' 'Gray')) }
@@ -1342,7 +1314,7 @@ function Show-OrderSelect($files) {
         }
         $lines.Add((mkLine ('-' * $cols) 'DarkGray'))
         $lines.Add((mkLine ('  ' + $msg) 'Yellow'))
-        $lines.Add((mkLine '  上下キー: 移動    Enter: 選ぶ / 取り消す    Home / End / PageUp / PageDown: ジャンプ    Esc: 戻る' 'DarkGray'))
+        $lines.Add((mkLine '  Up/Down: move    Enter: toggle    Home/End/PageUp/PageDown: jump    Esc: back' 'DarkGray'))
         Draw-Lines $lines
 
         $k = [Console]::ReadKey($true)
@@ -1361,7 +1333,7 @@ function Show-OrderSelect($files) {
                 if ($pos -ge 0) { $order.RemoveAt($pos) } else { $order.Add($cur) }
             }
             elseif ($cur -eq $n) {
-                if ($order.Count -eq 0) { $msg = '1 件以上選んでから「決定」してください。' }
+                if ($order.Count -eq 0) { $msg = 'Select at least one file before continuing.' }
                 else {
                     $picked = New-Object 'System.Collections.Generic.List[object]'
                     foreach ($ix in $order) { $picked.Add($files[$ix]) }
@@ -1376,7 +1348,6 @@ function Show-OrderSelect($files) {
     }
 }
 
-# ---------- ⑤ 設定 ----------
 function Show-Settings {
     $defs = $script:SettingDefs
     $cnt = $defs.Count
@@ -1388,8 +1359,8 @@ function Show-Settings {
     while ($true) {
         $cols = Get-Cols
         $lines = New-Object 'System.Collections.Generic.List[object]'
-        $lines.Add((mkLine '設定' 'Yellow'))
-        $lines.Add((mkLine ('  設定ファイル: ' + $script:SettingsPath) 'DarkGray'))
+        $lines.Add((mkLine 'Settings' 'Yellow'))
+        $lines.Add((mkLine ('  Settings file: ' + $script:SettingsPath) 'DarkGray'))
         $lines.Add((mkLine ('-' * $cols) 'DarkGray'))
         for ($i = 0; $i -lt $cnt; $i++) {
             $mark = '[ ]'
@@ -1398,13 +1369,13 @@ function Show-Settings {
             if ($i -eq $cur) { $lines.Add((mkLine ('> ' + $text) 'Black' 'Gray')) }
             else { $lines.Add((mkLine ('  ' + $text))) }
         }
-        if ($cur -eq $cnt) { $lines.Add((mkLine '> 戻る' 'Black' 'Gray')) }
-        else { $lines.Add((mkLine '  戻る')) }
+        if ($cur -eq $cnt) { $lines.Add((mkLine '> Back' 'Black' 'Gray')) }
+        else { $lines.Add((mkLine '  Back')) }
         $lines.Add((mkLine ('-' * $cols) 'DarkGray'))
         if ($cur -lt $cnt) { $lines.Add((mkLine ('  ' + $defs[$cur].Desc) 'Cyan')) }
         else { $lines.Add((mkLine '')) }
         $lines.Add((mkLine ('  ' + $msg) 'Yellow'))
-        $lines.Add((mkLine '  上下キー: 移動    Enter: オン / オフ切り替え（自動保存）    Esc: 戻る' 'DarkGray'))
+        $lines.Add((mkLine '  Up/Down: move    Enter: toggle and save    Esc: back' 'DarkGray'))
         Draw-Lines $lines
 
         $k = [Console]::ReadKey($true)
@@ -1417,40 +1388,39 @@ function Show-Settings {
             $key = $defs[$cur].Key
             $script:Cfg[$key] = -not $script:Cfg[$key]
             if (Save-Settings) { $msg = '' }
-            else { $msg = '設定ファイルを保存できませんでした（今回の起動中のみ有効です）。' }
+            else { $msg = 'Could not save settings. Changes apply only to this session.' }
         }
     }
 }
 
-# ---------- Office -> PDF ----------
 function Convert-Office($f, [string]$outPdf) {
     $ext = $f.Ext
     if ($ext -eq '.ppt' -or $ext -eq '.pptx') {
         if (-not $script:Apps.ppt) {
             try { $script:Apps.ppt = New-Object -ComObject PowerPoint.Application }
-            catch { throw 'PowerPoint を起動できません（インストールされていますか？）' }
+            catch { throw 'Could not start PowerPoint. Check that it is installed.' }
         }
-        $pres = $script:Apps.ppt.Presentations.Open($f.Full, -1, 0, 0)    # 読み取り専用・ウィンドウなし
+        $pres = $script:Apps.ppt.Presentations.Open($f.Full, -1, 0, 0)    # Open read-only without a window.
         try { $pres.SaveAs($outPdf, 32) }                                  # 32 = PDF
         finally { $pres.Close() }
     }
     elseif ($ext -eq '.doc' -or $ext -eq '.docx') {
         if (-not $script:Apps.word) {
             try { $w = New-Object -ComObject Word.Application }
-            catch { throw 'Word を起動できません（インストールされていますか？）' }
+            catch { throw 'Could not start Word. Check that it is installed.' }
             $w.Visible = $false
             try { $w.DisplayAlerts = 0 } catch { }
             try { $w.AutomationSecurity = 3 } catch { }
             $script:Apps.word = $w
         }
-        $doc = $script:Apps.word.Documents.Open($f.Full, $false, $true, $false)   # 変換確認なし・読み取り専用・履歴に残さない
+        $doc = $script:Apps.word.Documents.Open($f.Full, $false, $true, $false)   # Open read-only without a conversion prompt or recent-file entry.
         try { $doc.ExportAsFixedFormat($outPdf, 17) }                              # 17 = PDF
-        finally { $doc.Close(0) }                                                  # 0 = 保存しない
+        finally { $doc.Close(0) }                                                  # 0 = do not save changes.
     }
     elseif ($ext -eq '.xls' -or $ext -eq '.xlsx' -or $ext -eq '.xlsm') {
         if (-not $script:Apps.excel) {
             try { $x = New-Object -ComObject Excel.Application }
-            catch { throw 'Excel を起動できません（インストールされていますか？）' }
+            catch { throw 'Could not start Excel. Check that it is installed.' }
             $x.Visible = $false
             $x.DisplayAlerts = $false
             try { $x.EnableEvents = $false } catch { }
@@ -1458,7 +1428,7 @@ function Convert-Office($f, [string]$outPdf) {
             try { $x.AskToUpdateLinks = $false } catch { }
             $script:Apps.excel = $x
         }
-        $wb = $script:Apps.excel.Workbooks.Open($f.Full, 0, $true)    # リンク更新なし・読み取り専用
+        $wb = $script:Apps.excel.Workbooks.Open($f.Full, 0, $true)    # Open read-only without updating links.
         try {
             if ($script:Cfg['ExcelFitWidth']) {
                 $failed = 0
@@ -1472,7 +1442,7 @@ function Convert-Office($f, [string]$outPdf) {
                     catch { $failed++ }
                 }
                 if ($failed -gt 0) {
-                    $script:Warns.Add($f.Rel + ' : Excel の印刷設定を変更できないシートがありました（プリンタ未設定の可能性）。元の設定のまま変換しています。')
+                    $script:Warns.Add($f.Rel + ': Could not change print settings for some worksheets, possibly because no printer is configured. Those sheets use their original settings.')
                 }
             }
             $wb.ExportAsFixedFormat(0, $outPdf)                         # 0 = PDF
@@ -1480,7 +1450,7 @@ function Convert-Office($f, [string]$outPdf) {
         finally { $wb.Close($false) }
     }
     else {
-        throw ('未対応の形式です: ' + $ext)
+        throw ('Unsupported file type: ' + $ext)
     }
 }
 
@@ -1503,7 +1473,6 @@ function Close-Apps {
     [GC]::WaitForPendingFinalizers()
 }
 
-# ---------- ⑦ 変換・結合 / ⑧ 完了 ----------
 function Invoke-Merge($sel, [string]$outPath) {
     $script:RunOk = $false
     $script:Warns.Clear()
@@ -1511,7 +1480,7 @@ function Invoke-Merge($sel, [string]$outPath) {
     [Console]::Clear()
     [Console]::CursorVisible = $true
     try {
-        Write-Host '変換と結合を始めます...' -ForegroundColor Cyan
+        Write-Host 'Converting and merging...' -ForegroundColor Cyan
         [void](New-Item -ItemType Directory -Path $tmp)
         $skip = [bool]$script:Cfg['SkipOnError']
         $okFiles = New-Object 'System.Collections.Generic.List[object]'
@@ -1537,7 +1506,7 @@ function Invoke-Merge($sel, [string]$outPath) {
             catch { $err = Get-Msg $_ }
             if ($null -ne $err) {
                 if ($skip) {
-                    Write-Host ('    スキップ: ' + $err) -ForegroundColor Yellow
+                    Write-Host ('    Skipped: ' + $err) -ForegroundColor Yellow
                     $skipped.Add([pscustomobject]@{ Rel = $f.Rel; Reason = $err })
                 }
                 else { throw ($f.Rel + ' : ' + $err) }
@@ -1550,7 +1519,7 @@ function Invoke-Merge($sel, [string]$outPath) {
         }
         Close-Apps
 
-        if ($okFiles.Count -eq 0) { throw '結合できるファイルがありません。' }
+        if ($okFiles.Count -eq 0) { throw 'No files could be merged.' }
         $n = $okFiles.Count
         $paths = $okPaths.ToArray()
         $titles = New-Object 'string[]' $n
@@ -1567,7 +1536,7 @@ function Invoke-Merge($sel, [string]$outPath) {
         $errs = New-Object 'string[]' $n
 
         Write-Host ''
-        Write-Host '結合しています...'
+        Write-Host 'Merging...'
         $totalPages = [PdfMerge]::Merge($paths, $titles, $blank, [bool]$script:Cfg['UnifyA4'], $skip, $outPath, $start, $errs)
 
         for ($i = 0; $i -lt $n; $i++) {
@@ -1577,25 +1546,25 @@ function Invoke-Merge($sel, [string]$outPath) {
         }
         if ($skipped.Count -gt 0) {
             Write-Host ''
-            Write-Host ('スキップしたファイル（' + $skipped.Count + ' 件）:') -ForegroundColor Yellow
+            Write-Host ('Skipped files (' + $skipped.Count + '):') -ForegroundColor Yellow
             foreach ($s in $skipped) { Write-Host ('  ' + $s.Rel + ' : ' + $s.Reason) -ForegroundColor Yellow }
         }
         if ($script:Warns.Count -gt 0) {
             Write-Host ''
-            Write-Host '注意:' -ForegroundColor Yellow
+            Write-Host 'Warnings:' -ForegroundColor Yellow
             foreach ($w in $script:Warns) { Write-Host ('  ' + $w) -ForegroundColor Yellow }
         }
         Write-Host ''
-        Write-Host '結合内容:'
+        Write-Host 'Merged documents:'
         for ($i = 0; $i -lt $n; $i++) {
             if ($start[$i] -gt 0) {
                 $mark = ''
-                if ($blank[$i]) { $mark = ' (+白紙1p)' }
-                Write-Host (('  p.{0,3} から {1,3}p{2}  {3}' -f $start[$i], $okCounts[$i], $mark, $okFiles[$i].Rel))
+                if ($blank[$i]) { $mark = ' (+1 blank page)' }
+                Write-Host (('  Page {0,3}: {1,3} pages{2}  {3}' -f $start[$i], $okCounts[$i], $mark, $okFiles[$i].Rel))
             }
         }
         Write-Host ''
-        Write-Host ('完了: ' + $outPath + '  （全 ' + $totalPages + ' ページ）') -ForegroundColor Green
+        Write-Host ('Saved: ' + $outPath + '  (' + $totalPages + ' pages)') -ForegroundColor Green
         $script:RunOk = $true
 
         if ($script:Cfg['OpenFolderAfter']) {
@@ -1605,7 +1574,7 @@ function Invoke-Merge($sel, [string]$outPath) {
     }
     catch {
         Write-Host ''
-        Write-Host ('エラー: ' + (Get-Msg $_)) -ForegroundColor Red
+        Write-Host ('Error: ' + (Get-Msg $_)) -ForegroundColor Red
     }
     finally {
         Close-Apps
@@ -1614,19 +1583,17 @@ function Invoke-Merge($sel, [string]$outPath) {
     }
 }
 
-function On-Off([bool]$v) { if ($v) { return 'オン' } else { return 'オフ' } }
+function On-Off([bool]$v) { if ($v) { return 'On' } else { return 'Off' } }
 
-# ---------- メイン ----------
 function Main {
     $script:DefFg = [Console]::ForegroundColor
     $script:DefBg = [Console]::BackgroundColor
 
     try { Add-Type -TypeDefinition $cs -Language CSharp }
-    catch { throw ('C# のコンパイルに失敗しました (Add-Type): ' + (Get-Msg $_)) }
+    catch { throw ('Could not compile the PDF engine: ' + (Get-Msg $_)) }
 
     Load-Settings
 
-    # ① フォルダ選択（フォルダを cmd にドラッグした場合はダイアログを省略）
     $dir = $env:MERGE_ARG
     if ([string]::IsNullOrWhiteSpace($dir)) {
         Select-Folder
@@ -1639,62 +1606,59 @@ function Main {
     $leaf = [System.IO.Path]::GetFileName($trim)
     if ([string]::IsNullOrEmpty($leaf)) { $leaf = $trim.Replace(':', '').Replace('\', '') }
     if ([string]::IsNullOrEmpty($leaf)) { $leaf = 'merged' }
+    # Keep this suffix consistent with the exclusion rule for previous outputs.
     $outName = $leaf + '結合版' + (Get-Date -Format 'yyyyMMdd') + '.pdf'
     $outRegex = '^' + [regex]::Escape($leaf) + '結合版\d{8}\.pdf$'
     $outPath = Join-Path $dir $outName
 
     while ($true) {
-        # ② ファイル収集
         Get-Targets $dir $outRegex
         $files = $script:Files
         if ($files.Count -eq 0) {
             [Console]::Clear()
-            Write-Host ('対象のファイル（PDF / PowerPoint / Word / Excel）が見つかりません: ' + $dir) -ForegroundColor Yellow
-            Wait-Enter 'Enter キーで終了します。'
+            Write-Host ('No supported files found (PDF, PowerPoint, Word or Excel): ' + $dir) -ForegroundColor Yellow
+            Wait-Enter 'Press Enter to exit.'
             return
         }
         $labels = New-Object 'System.Collections.Generic.List[string]'
         for ($i = 0; $i -lt $files.Count; $i++) { $labels.Add(('{0,3}. {1}' -f ($i + 1), $files[$i].Rel)) }
         $dirShown = [TuiUtil]::CutHead($dir, [Math]::Max(10, (Get-Cols) - 12))
         $info = @(
-            ('フォルダ: ' + $dirShown),
-            ('対象: ' + $files.Count + ' 件（PDF / PowerPoint / Word / Excel・サブフォルダを含む・ファイル名の昇順）')
+            ('Folder: ' + $dirShown),
+            ('Files: ' + $files.Count + ' (including subfolders, sorted by relative path)')
         )
 
-        # ③ メインメニュー
-        $c = Show-ListMenu 'File2PDF' $info '対象ファイル一覧' $labels @('このまま結合', '順番を指定して結合', '設定', '終了') '終了'
+        $c = Show-ListMenu 'File2PDF' $info 'Files to merge' $labels @('Merge in listed order', 'Choose merge order', 'Settings', 'Exit') 'Exit'
         $sel = $null
         if ($c -eq 0) { $sel = $files }
         elseif ($c -eq 1) {
-            Show-OrderSelect $files        # ④
+            Show-OrderSelect $files
             if ($script:PickOk) { $sel = $script:Picked }
         }
-        elseif ($c -eq 2) { Show-Settings; continue }   # ⑤
+        elseif ($c -eq 2) { Show-Settings; continue }
         elseif ($c -eq 3 -or $c -eq -1) { return }
         else { continue }
         if ($null -eq $sel) { continue }
 
-        # ⑥ 確認
         $exists = Test-Path -LiteralPath $outPath
         $labels2 = New-Object 'System.Collections.Generic.List[string]'
         for ($i = 0; $i -lt $sel.Count; $i++) { $labels2.Add(('{0,3}. {1}' -f ($i + 1), $sel[$i].Rel)) }
         $outShown = [TuiUtil]::CutHead($outPath, [Math]::Max(10, (Get-Cols) - 12))
         $info2 = New-Object 'System.Collections.Generic.List[string]'
-        $info2.Add('出力先: ' + $outShown)
-        $info2.Add('設定: A4統一=' + (On-Off $script:Cfg['UnifyA4']) + ' / Excel横1ページ=' + (On-Off $script:Cfg['ExcelFitWidth']) + ' / エラー時スキップ=' + (On-Off $script:Cfg['SkipOnError']))
-        $runLabel = '実行'
+        $info2.Add('Output: ' + $outShown)
+        $info2.Add('Settings: A4=' + (On-Off $script:Cfg['UnifyA4']) + ' / Excel fit width=' + (On-Off $script:Cfg['ExcelFitWidth']) + ' / Skip errors=' + (On-Off $script:Cfg['SkipOnError']))
+        $runLabel = 'Merge'
         if ($exists) {
-            $info2.Add('※ 同名のファイルが既にあります。実行すると上書きされます。')
-            $runLabel = '上書きして実行'
+            $info2.Add('The output file already exists. Merging will overwrite it.')
+            $runLabel = 'Overwrite and merge'
         }
-        $c2 = Show-ListMenu '結合内容の確認' $info2 ('結合する順番（' + $sel.Count + ' 件）') $labels2 @($runLabel, '戻る')
+        $c2 = Show-ListMenu 'Review merge' $info2 ('Merge order (' + $sel.Count + ' files)') $labels2 @($runLabel, 'Back')
         if ($c2 -ne 0) { continue }
 
-        # ⑦ 実行 → ⑧ 完了
         Invoke-Merge $sel $outPath
-        if ($script:Cfg['ReturnToMenu']) { Wait-Enter 'Enter キーでメニューに戻ります。' }
+        if ($script:Cfg['ReturnToMenu']) { Wait-Enter 'Press Enter to return to the menu.' }
         else {
-            Wait-Enter 'Enter キーで終了します。'
+            Wait-Enter 'Press Enter to exit.'
             return
         }
     }
@@ -1704,7 +1668,7 @@ try { Main }
 catch {
     [Console]::CursorVisible = $true
     Write-Host ''
-    Write-Host ('エラー: ' + (Get-Msg $_)) -ForegroundColor Red
+    Write-Host ('Error: ' + (Get-Msg $_)) -ForegroundColor Red
     $script:ExitCode = 1
 }
 finally {

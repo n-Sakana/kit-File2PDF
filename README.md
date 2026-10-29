@@ -1,19 +1,32 @@
 # File2PDF
 
-フォルダの中の PDF・PowerPoint・Word・Excel を、両面印刷用に 1 つの PDF にまとめる Windows 用のツールです。資料が奇数ページで終わるときは後ろに白紙を 1 ページ入れるので、両面で印刷しても次の資料がいつも表から始まります。資料ごとにしおりを付けます。
+File2PDF is a Windows tool that combines PDF, PowerPoint, Word and Excel files into one PDF for duplex printing. It adds a blank page after each document with an odd page count, including the last, so each document starts on the front of a sheet. Each document gets a bookmark.
 
-## 使い方
+## Requirements
 
-`File2PDF.cmd` をダブルクリックしてフォルダを選びます。フォルダを `File2PDF.cmd` にドラッグしても始められます。サブフォルダの中のファイルも対象で、ファイル名の順に並びます。
+- Windows PowerShell 5.1.
+- The corresponding Microsoft Office desktop app to convert PowerPoint, Word or Excel files. PDF files do not require Office.
 
-メニューは上下キーで選び、Enter で決めます。
+No installer or administrator rights are required. Save [File2PDF.cmd](File2PDF.cmd) to a writable folder.
 
-- `このまま結合`：一覧の順にまとめます。
-- `順番を指定して結合`：まとめたい順に 1 つずつ選びます。選ばなかったファイルは入りません。
-- `設定`：A4 への統一、Excel を横 1 ページに収めるかなどを切り替えます。設定は `File2PDF.cmd` と同じ場所の `File2PDF.ini` に保存されます。
+## Usage
 
-できた PDF は選んだフォルダに `<フォルダ名>結合版<日付>.pdf` の名前で保存されます。
+Double-click `File2PDF.cmd` and choose a folder, or drag a folder onto the file. It includes subfolders and lists supported files by relative path, ignoring case.
 
-## 必要なもの
+Use the Up and Down keys to move, Enter to select, and Esc to go back.
 
-Windows PowerShell 5.1。PowerPoint・Word・Excel のファイルを変換するときは、その Office アプリが必要です。インストールと管理者権限は不要です。元のファイルは変更しません。パスワード付きの PDF は扱えません。
+- **Merge in listed order** includes every listed file.
+- **Choose merge order** lets you select files in the order to merge them. Press Enter again to remove a selection. Choose **Continue** when ready; unselected files are excluded.
+- **Settings** controls A4 page sizing, Excel scaling, error handling and what happens after a merge. Changes are saved to `File2PDF.ini` beside the script.
+
+Review the file order and output path, then choose **Merge**. If the output exists, the confirmation menu offers **Overwrite and merge**.
+
+The PDF is saved in the selected folder as `<folder>結合版<yyyyMMdd>.pdf`. The suffix `結合版` means "merged version" and is kept so previous outputs in that folder can be excluded from later merges.
+
+## Supported files and limitations
+
+Supported extensions: `.pdf`, `.ppt`, `.pptx`, `.doc`, `.docx`, `.xls`, `.xlsx`, `.xlsm`.
+
+Source files are opened read-only and are not saved. Encrypted PDFs are not supported. By default, an error stops the merge; enable **Skip files with errors** to continue with the remaining files.
+
+A4 sizing and fitting Excel sheets to one page wide are enabled by default. A4 sizing preserves orientation and proportions, but removes annotations, including links, from resized pages. The output creates document bookmarks and does not preserve the source PDFs' tag structure.
